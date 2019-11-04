@@ -12,7 +12,7 @@ android {
     buildToolsVersion '29.0.2'
 
     defaultConfig {
-        applicationId "com.google.firebase.udacity.friendlychat"
+        applicationId "com.google.firebase.udacity.rifat.friendlychat"
         minSdkVersion 17
         targetSdkVersion 29
         versionCode 1
@@ -48,4 +48,11 @@ dependencies {
 
     // Displaying images
     implementation 'com.github.bumptech.glide:glide:4.10.0'
+
+    // Firebase
+    implementation 'com.google.firebase:firebase-analytics:17.2.1'
+    implementation 'com.google.firebase:firebase-core:17.2.1'
+    implementation 'com.google.firebase:firebase-database:19.2.0'
 }
+
+apply plugin: 'com.google.gms.google-services'
