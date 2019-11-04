@@ -83,6 +83,8 @@ public class MainActivity extends AppCompatActivity {
     private StorageReference mChatPhotosStorageReference;
     private FirebaseRemoteConfig mFirebaseRemoteConfig;
 
+    // TODO: Improve codebase
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
