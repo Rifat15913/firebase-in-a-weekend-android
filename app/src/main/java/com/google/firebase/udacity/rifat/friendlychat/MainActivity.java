@@ -16,10 +16,12 @@
 package com.google.firebase.udacity.rifat.friendlychat;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.TextWatcher;
+import android.util.Log;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
@@ -42,10 +44,16 @@ import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfig;
+import com.google.firebase.remoteconfig.FirebaseRemoteConfigSettings;
+import com.google.firebase.storage.FirebaseStorage;
+import com.google.firebase.storage.StorageReference;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -53,7 +61,9 @@ public class MainActivity extends AppCompatActivity {
 
     public static final String ANONYMOUS = "anonymous";
     public static final int DEFAULT_MSG_LENGTH_LIMIT = 1000;
+    public static final String KEY_FRIENDLY_MESSAGE_LENGTH = "friendly_message_length";
     public static final int RC_SIGN_IN = 1;
+    private static final int RC_PHOTO_PICKER = 2;
 
     private ListView mMessageListView;
     private MessageAdapter mMessageAdapter;
@@ -69,6 +79,9 @@ public class MainActivity extends AppCompatActivity {
     private ChildEventListener mChildEventListener;
     private FirebaseAuth mFirebaseAuth;
     private FirebaseAuth.AuthStateListener mAuthStateListener;
+    private FirebaseStorage mFirebaseStorage;
+    private StorageReference mChatPhotosStorageReference;
+    private FirebaseRemoteConfig mFirebaseRemoteConfig;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -81,6 +94,11 @@ public class MainActivity extends AppCompatActivity {
         mMessagesDatabaseReference = mFirebaseDatabase.getReference().child("messages");
 
         mFirebaseAuth = FirebaseAuth.getInstance();
+
+        mFirebaseStorage = FirebaseStorage.getInstance();
+        mChatPhotosStorageReference = mFirebaseStorage.getReference().child("chat_photos");
+
+        mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
 
         // Initialize references to views
         mProgressBar = findViewById(R.id.progressBar);
@@ -99,7 +117,12 @@ public class MainActivity extends AppCompatActivity {
 
         // ImagePickerButton shows an image picker to upload a image for a message
         mPhotoPickerButton.setOnClickListener(view -> {
-            // TODO: Fire an intent to show an image picker
+            // Fire an intent to show an image picker
+            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+            intent.setType("image/jpeg");
+            intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+            startActivityForResult(Intent.createChooser(intent, "Complete action using"),
+                    RC_PHOTO_PICKER);
         });
 
         // Enable Send button when there's text to send
@@ -168,6 +191,37 @@ public class MainActivity extends AppCompatActivity {
                         RC_SIGN_IN);
             }
         };
+
+        FirebaseRemoteConfigSettings settings =
+                new FirebaseRemoteConfigSettings.Builder()
+                        .setMinimumFetchIntervalInSeconds(10)
+                        .build();
+        mFirebaseRemoteConfig.setConfigSettingsAsync(settings);
+
+        Map<String, Object> defaultConfigMap = new HashMap<>();
+        defaultConfigMap.put(KEY_FRIENDLY_MESSAGE_LENGTH, DEFAULT_MSG_LENGTH_LIMIT);
+        mFirebaseRemoteConfig.setDefaultsAsync(defaultConfigMap);
+
+        mFirebaseRemoteConfig.fetchAndActivate()
+                .addOnCompleteListener(this, task -> {
+                    if (task.isSuccessful() && task.getResult() != null) {
+                        boolean updated = task.getResult();
+                        Log.d(TAG, "Config params updated: " + updated);
+                        Toast.makeText(MainActivity.this, "Fetch and activate succeeded",
+                                Toast.LENGTH_SHORT).show();
+                        applyLength();
+                    } else {
+                        Toast.makeText(MainActivity.this, "Fetch failed",
+                                Toast.LENGTH_SHORT).show();
+                        applyLength();
+                    }
+                });
+    }
+
+    private void applyLength() {
+        mMessageEditText.setFilters(new InputFilter[]{new InputFilter.LengthFilter(
+                (int) mFirebaseRemoteConfig.getLong(KEY_FRIENDLY_MESSAGE_LENGTH)
+        )});
     }
 
     private void onSignedOutCleanUp() {
@@ -266,6 +320,40 @@ public class MainActivity extends AppCompatActivity {
             } else if (resultCode == RESULT_CANCELED) {
                 Toast.makeText(this, "Signed in canceled!", Toast.LENGTH_SHORT).show();
                 finish();
+            }
+        } else if (requestCode == RC_PHOTO_PICKER) {
+            if (resultCode == RESULT_OK) {
+                if (data != null
+                        && data.getData() != null
+                        && data.getData().getLastPathSegment() != null) {
+                    StorageReference photoReference =
+                            mChatPhotosStorageReference.child(data.getData().getLastPathSegment());
+                    photoReference.putFile(data.getData())
+                            .continueWithTask(task -> {
+                                if (!task.isSuccessful() && task.getException() != null) {
+                                    throw task.getException();
+                                }
+
+                                return photoReference.getDownloadUrl();
+                            }).addOnCompleteListener(this,
+                            task -> {
+                                if (task.isSuccessful() && task.getResult() != null) {
+                                    Uri downloadUrl = task.getResult();
+                                    FriendlyMessage message = new FriendlyMessage(null,
+                                            mUsername,
+                                            downloadUrl.toString()
+                                    );
+
+                                    mMessagesDatabaseReference.push().setValue(message);
+                                } else {
+                                    Toast.makeText(this, "Photo could not be uploaded",
+                                            Toast.LENGTH_SHORT).show();
+                                }
+                            }
+                    );
+                }
+            } else if (resultCode == RESULT_CANCELED) {
+                Toast.makeText(this, "Photo picking is canceled!", Toast.LENGTH_SHORT).show();
             }
         }
     }
