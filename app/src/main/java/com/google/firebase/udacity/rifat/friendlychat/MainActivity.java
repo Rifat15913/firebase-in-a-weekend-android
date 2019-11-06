@@ -23,7 +23,6 @@ import android.text.InputFilter;
 import android.text.TextWatcher;
 import android.util.Log;
 import android.view.Menu;
-import android.view.MenuInflater;
 import android.view.MenuItem;
 import android.widget.Button;
 import android.widget.EditText;
@@ -49,6 +48,8 @@ import com.google.firebase.remoteconfig.FirebaseRemoteConfigSettings;
 import com.google.firebase.storage.FirebaseStorage;
 import com.google.firebase.storage.StorageReference;
 
+import org.jetbrains.annotations.NotNull;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -57,14 +58,14 @@ import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
 
-    private static final String TAG = "MainActivity";
-
-    public static final String ANONYMOUS = "anonymous";
     public static final int DEFAULT_MSG_LENGTH_LIMIT = 1000;
+    public static final String ANONYMOUS = "anonymous";
     public static final String KEY_FRIENDLY_MESSAGE_LENGTH = "friendly_message_length";
+    // Constants
+    private static final String TAG = "MainActivity";
     public static final int RC_SIGN_IN = 1;
     private static final int RC_PHOTO_PICKER = 2;
-
+    // UI components
     private ListView mMessageListView;
     private MessageAdapter mMessageAdapter;
     private ProgressBar mProgressBar;
@@ -72,36 +73,48 @@ public class MainActivity extends AppCompatActivity {
     private EditText mMessageEditText;
     private Button mSendButton;
 
+    // Variables
     private String mUsername;
 
+    // Firebase core components
     private FirebaseDatabase mFirebaseDatabase;
-    private DatabaseReference mMessagesDatabaseReference;
-    private ChildEventListener mChildEventListener;
     private FirebaseAuth mFirebaseAuth;
-    private FirebaseAuth.AuthStateListener mAuthStateListener;
     private FirebaseStorage mFirebaseStorage;
-    private StorageReference mChatPhotosStorageReference;
     private FirebaseRemoteConfig mFirebaseRemoteConfig;
 
-    // TODO: Improve codebase
+    // Firebase component references
+    private DatabaseReference mMessagesDatabaseReference;
+    private StorageReference mChatPhotosStorageReference;
+
+    // Firebase listeners
+    private ChildEventListener mChildEventListener;
+    private FirebaseAuth.AuthStateListener mAuthStateListener;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mUsername = ANONYMOUS;
+        initialize();
+        setListeners();
+        loadData();
+    }
 
-        mFirebaseDatabase = FirebaseDatabase.getInstance();
-        mMessagesDatabaseReference = mFirebaseDatabase.getReference().child("messages");
+    private void loadData() {
+        // Fetch from firebase remote config to apply parameters
+        mFirebaseRemoteConfig.fetchAndActivate()
+                .addOnCompleteListener(this, task -> {
+                    if (task.isSuccessful() && task.getResult() != null) {
+                        boolean updated = task.getResult();
+                        Log.d(TAG, "Config params updated: " + updated);
+                        applyLength();
+                    } else {
+                        applyLength();
+                    }
+                });
+    }
 
-        mFirebaseAuth = FirebaseAuth.getInstance();
-
-        mFirebaseStorage = FirebaseStorage.getInstance();
-        mChatPhotosStorageReference = mFirebaseStorage.getReference().child("chat_photos");
-
-        mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
-
+    private void initialize() {
         // Initialize references to views
         mProgressBar = findViewById(R.id.progressBar);
         mMessageListView = findViewById(R.id.messageListView);
@@ -117,15 +130,51 @@ public class MainActivity extends AppCompatActivity {
         // Initialize progress bar
         mProgressBar.setVisibility(ProgressBar.INVISIBLE);
 
-        // ImagePickerButton shows an image picker to upload a image for a message
-        mPhotoPickerButton.setOnClickListener(view -> {
-            // Fire an intent to show an image picker
-            Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
-            intent.setType("image/jpeg");
-            intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
-            startActivityForResult(Intent.createChooser(intent, "Complete action using"),
-                    RC_PHOTO_PICKER);
+        // Assign EditText text length
+        mMessageEditText.setFilters(new InputFilter[]{
+                new InputFilter.LengthFilter(DEFAULT_MSG_LENGTH_LIMIT)
         });
+
+        // Initialize user name
+        mUsername = ANONYMOUS;
+
+        // Initialize firebase components
+        mFirebaseDatabase = FirebaseDatabase.getInstance();
+        mFirebaseAuth = FirebaseAuth.getInstance();
+        mFirebaseStorage = FirebaseStorage.getInstance();
+        mFirebaseRemoteConfig = FirebaseRemoteConfig.getInstance();
+
+        // Initialize firebase component references
+        mMessagesDatabaseReference = mFirebaseDatabase.getReference().child("messages");
+        mChatPhotosStorageReference = mFirebaseStorage.getReference().child("chat_photos");
+
+        // Initialize firebase callbacks
+        mAuthStateListener = firebaseAuth -> {
+            FirebaseUser user = firebaseAuth.getCurrentUser();
+
+            if (user != null) {
+                // User is signed in
+                onSignedInInitialize(user.getDisplayName());
+            } else {
+                // User is signed out
+                onSignedOutCleanUp();
+                goForAuthUI();
+            }
+        };
+
+        // Initialize firebase remote config and set parameters
+        mFirebaseRemoteConfig.setConfigSettingsAsync(
+                new FirebaseRemoteConfigSettings.Builder()
+                        .build());
+
+        Map<String, Object> defaultConfigMap = new HashMap<>();
+        defaultConfigMap.put(KEY_FRIENDLY_MESSAGE_LENGTH, DEFAULT_MSG_LENGTH_LIMIT);
+        mFirebaseRemoteConfig.setDefaultsAsync(defaultConfigMap);
+    }
+
+    private void setListeners() {
+        // ImagePickerButton shows an image picker to upload a image for a message
+        mPhotoPickerButton.setOnClickListener(view -> showImagePicker());
 
         // Enable Send button when there's text to send
         mMessageEditText.addTextChangedListener(new TextWatcher() {
@@ -135,89 +184,32 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onTextChanged(CharSequence charSequence, int i, int i1, int i2) {
-                if (charSequence.toString().trim().length() > 0) {
-                    mSendButton.setEnabled(true);
-                } else {
-                    mSendButton.setEnabled(false);
-                }
+                mSendButton.setEnabled(charSequence.toString().trim().length() > 0);
             }
 
             @Override
             public void afterTextChanged(Editable editable) {
             }
         });
-        mMessageEditText.setFilters(new InputFilter[]{new InputFilter.LengthFilter(DEFAULT_MSG_LENGTH_LIMIT)});
 
         // Send button sends a message and clears the EditText
-        mSendButton.setOnClickListener(view -> {
-            // Send messages on click
-            FriendlyMessage message = new FriendlyMessage(
-                    mMessageEditText.getText().toString().trim(),
-                    mUsername,
-                    null
-            );
-            mMessagesDatabaseReference.push().setValue(message);
+        mSendButton.setOnClickListener(view -> sendMessage());
+    }
 
-            // Clear input box
-            mMessageEditText.getText().clear();
-        });
+    private void goForAuthUI() {
+        // Choose authentication providers
+        List<AuthUI.IdpConfig> providers = Arrays.asList(
+                new AuthUI.IdpConfig.EmailBuilder().build(),
+                new AuthUI.IdpConfig.GoogleBuilder().build());
 
-        mAuthStateListener = firebaseAuth -> {
-            FirebaseUser user = firebaseAuth.getCurrentUser();
-
-            if (user != null) {
-                // User is signed in
-                Toast.makeText(
-                        MainActivity.this,
-                        "You're now signed in. Welcome to Friendly Chat!",
-                        Toast.LENGTH_SHORT).show();
-
-                onSignedInInitialize(user.getDisplayName());
-            } else {
-                // User is signed out
-
-                onSignedOutCleanUp();
-
-                // Choose authentication providers
-                List<AuthUI.IdpConfig> providers = Arrays.asList(
-                        new AuthUI.IdpConfig.EmailBuilder().build(),
-                        new AuthUI.IdpConfig.GoogleBuilder().build());
-
-                // Create and launch sign-in intent
-                startActivityForResult(
-                        AuthUI.getInstance()
-                                .createSignInIntentBuilder()
-                                .setIsSmartLockEnabled(false)
-                                .setAvailableProviders(providers)
-                                .build(),
-                        RC_SIGN_IN);
-            }
-        };
-
-        FirebaseRemoteConfigSettings settings =
-                new FirebaseRemoteConfigSettings.Builder()
-                        .setMinimumFetchIntervalInSeconds(10)
-                        .build();
-        mFirebaseRemoteConfig.setConfigSettingsAsync(settings);
-
-        Map<String, Object> defaultConfigMap = new HashMap<>();
-        defaultConfigMap.put(KEY_FRIENDLY_MESSAGE_LENGTH, DEFAULT_MSG_LENGTH_LIMIT);
-        mFirebaseRemoteConfig.setDefaultsAsync(defaultConfigMap);
-
-        mFirebaseRemoteConfig.fetchAndActivate()
-                .addOnCompleteListener(this, task -> {
-                    if (task.isSuccessful() && task.getResult() != null) {
-                        boolean updated = task.getResult();
-                        Log.d(TAG, "Config params updated: " + updated);
-                        Toast.makeText(MainActivity.this, "Fetch and activate succeeded",
-                                Toast.LENGTH_SHORT).show();
-                        applyLength();
-                    } else {
-                        Toast.makeText(MainActivity.this, "Fetch failed",
-                                Toast.LENGTH_SHORT).show();
-                        applyLength();
-                    }
-                });
+        // Create and launch sign-in intent
+        startActivityForResult(
+                AuthUI.getInstance()
+                        .createSignInIntentBuilder()
+                        .setIsSmartLockEnabled(false)
+                        .setAvailableProviders(providers)
+                        .build(),
+                RC_SIGN_IN);
     }
 
     private void applyLength() {
@@ -226,22 +218,41 @@ public class MainActivity extends AppCompatActivity {
         )});
     }
 
+    private void showImagePicker() {
+        // Fire an intent to show an image picker
+        Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+        intent.setType("image/jpeg");
+        intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+        startActivityForResult(Intent.createChooser(intent, "Complete action using"),
+                RC_PHOTO_PICKER);
+    }
+
+    private void sendMessage() {
+        // Send messages on click
+        mMessagesDatabaseReference.push().setValue(new FriendlyMessage(
+                mMessageEditText.getText().toString().trim(),
+                mUsername,
+                null
+        ));
+
+        // Clear input box
+        mMessageEditText.getText().clear();
+    }
+
+    private void onSignedInInitialize(String userName) {
+        Toast.makeText(
+                MainActivity.this,
+                "You're now signed in. Welcome to Friendly Chat!",
+                Toast.LENGTH_SHORT).show();
+
+        mUsername = userName;
+        attachReadDatabaseListener();
+    }
+
     private void onSignedOutCleanUp() {
         mUsername = ANONYMOUS;
         mMessageAdapter.clear();
         detachDatabaseReadListener();
-    }
-
-    private void detachDatabaseReadListener() {
-        if (mChildEventListener != null) {
-            mMessagesDatabaseReference.removeEventListener(mChildEventListener);
-            mChildEventListener = null;
-        }
-    }
-
-    private void onSignedInInitialize(String userName) {
-        mUsername = userName;
-        attachReadDatabaseListener();
     }
 
     private void attachReadDatabaseListener() {
@@ -278,10 +289,16 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void detachDatabaseReadListener() {
+        if (mChildEventListener != null) {
+            mMessagesDatabaseReference.removeEventListener(mChildEventListener);
+            mChildEventListener = null;
+        }
+    }
+
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        MenuInflater inflater = getMenuInflater();
-        inflater.inflate(R.menu.main_menu, menu);
+        getMenuInflater().inflate(R.menu.main_menu, menu);
         return true;
     }
 
@@ -325,38 +342,43 @@ public class MainActivity extends AppCompatActivity {
             }
         } else if (requestCode == RC_PHOTO_PICKER) {
             if (resultCode == RESULT_OK) {
-                if (data != null
-                        && data.getData() != null
-                        && data.getData().getLastPathSegment() != null) {
-                    StorageReference photoReference =
-                            mChatPhotosStorageReference.child(data.getData().getLastPathSegment());
-                    photoReference.putFile(data.getData())
-                            .continueWithTask(task -> {
-                                if (!task.isSuccessful() && task.getException() != null) {
-                                    throw task.getException();
-                                }
-
-                                return photoReference.getDownloadUrl();
-                            }).addOnCompleteListener(this,
-                            task -> {
-                                if (task.isSuccessful() && task.getResult() != null) {
-                                    Uri downloadUrl = task.getResult();
-                                    FriendlyMessage message = new FriendlyMessage(null,
-                                            mUsername,
-                                            downloadUrl.toString()
-                                    );
-
-                                    mMessagesDatabaseReference.push().setValue(message);
-                                } else {
-                                    Toast.makeText(this, "Photo could not be uploaded",
-                                            Toast.LENGTH_SHORT).show();
-                                }
-                            }
-                    );
+                if (data != null) {
+                    uploadPhotoAndSendMessage(data);
                 }
             } else if (resultCode == RESULT_CANCELED) {
                 Toast.makeText(this, "Photo picking is canceled!", Toast.LENGTH_SHORT).show();
             }
+        }
+    }
+
+    private void uploadPhotoAndSendMessage(@NotNull Intent data) {
+        if (data.getData() != null
+                && data.getData().getLastPathSegment() != null) {
+            StorageReference photoReference =
+                    mChatPhotosStorageReference.child(data.getData().getLastPathSegment());
+            photoReference.putFile(data.getData())
+                    .continueWithTask(task -> {
+                        if (!task.isSuccessful() && task.getException() != null) {
+                            throw task.getException();
+                        }
+
+                        return photoReference.getDownloadUrl();
+                    }).addOnCompleteListener(this,
+                    task -> {
+                        if (task.isSuccessful() && task.getResult() != null) {
+                            Uri downloadUrl = task.getResult();
+                            FriendlyMessage message = new FriendlyMessage(null,
+                                    mUsername,
+                                    downloadUrl.toString()
+                            );
+
+                            mMessagesDatabaseReference.push().setValue(message);
+                        } else {
+                            Toast.makeText(this, "Photo could not be uploaded",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    }
+            );
         }
     }
 }
