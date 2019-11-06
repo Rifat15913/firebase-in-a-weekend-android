@@ -15,8 +15,14 @@
  */
 package com.google.firebase.udacity.rifat.friendlychat
 
-data class FriendlyMessage(
-        val text: String?,
-        val name: String,
-        val photoUrl: String? = null
-)
+class FriendlyMessage() {
+    var text: String? = null
+    var name: String? = null
+    var photoUrl: String? = null
+
+    constructor(text: String?, name: String, photoUrl: String?) : this() {
+        this.text = text
+        this.name = name
+        this.photoUrl = photoUrl
+    }
+}
